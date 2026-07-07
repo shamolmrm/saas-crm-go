@@ -1,0 +1,1319 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TENANT & IDENTITY
+// Multi-tenant foundation built from v0 — avoids Phase 1a retrofit pain.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Tenant {
+  id        String  @id @default(cuid())
+  name      String
+  subdomain String? @unique  // Phase 1a: subdomain-based routing
+  isActive  Boolean @default(true)
+  plan      String  @default("trial")  // Phase 1a: trial | starter | pro | agency
+
+  members             TenantMember[]
+  invitations         Invitation[]
+  contacts            Contact[]
+  deals               Deal[]
+  pipelines           Pipeline[]
+  activities          Activity[]
+  workflowDefinitions WorkflowDefinition[]
+  workflowRuns        WorkflowRun[]
+  channelAccounts     ChannelAccount[]
+  conversations       Conversation[]
+  invoiceCounter      InvoiceCounter?
+  invoices            Invoice[]
+  expenses            Expense[]
+  products            Product[]
+  projects            Project[]
+  employeeProfiles    EmployeeProfile[]
+  hrAuditLogs         HrAuditLog[]
+  ticketCategories    TicketCategory[]
+  tickets             Ticket[]
+  callScripts         CallScript[]
+  callRecords         CallRecord[]
+  leadSources         LeadSource[]
+  leads               Lead[]
+  serviceTypes        ServiceType[]
+  appointments        Appointment[]
+  forms               Form[]
+  formSubmissions     FormSubmission[]
+  campaigns           Campaign[]
+  surveys             Survey[]
+  surveyResponses     SurveyResponse[]
+  landingPages        LandingPage[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([subdomain])
+}
+
+model User {
+  id           String  @id @default(cuid())
+  name         String
+  email        String  @unique
+  passwordHash String
+  avatarUrl    String?
+
+  tenantMembers        TenantMember[]
+  refreshTokens        RefreshToken[]
+  activities           Activity[]
+  ownedDeals           Deal[]        @relation("DealOwner")
+  createdInvitations   Invitation[]  @relation("InvitationCreator")
+  assignedAppointments  Appointment[]   @relation("AppointmentAssignee")
+  assignedTickets       Ticket[]        @relation("TicketAssignee")
+  ticketComments        TicketComment[] @relation("TicketCommentAuthor")
+  assignedTasks         Task[]          @relation("TaskAssignee")
+  timeEntries           TimeEntry[]     @relation("TimeEntryUser")
+  employeeProfile       EmployeeProfile?
+  salaryRecordsCreated  SalaryRecord[]  @relation("SalaryCreatedBy")
+  hrDocumentsUploaded   HrDocument[]    @relation("HrDocumentUploadedBy")
+  leaveReviews          LeaveRequest[]  @relation("LeaveReviewedBy")
+  hrAuditActions        HrAuditLog[]    @relation("HrAuditActor")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+enum TenantRole {
+  ADMIN
+  MEMBER
+}
+
+model TenantMember {
+  id       String     @id @default(cuid())
+  tenantId String
+  tenant   Tenant     @relation(fields: [tenantId], references: [id])
+  userId   String
+  user     User       @relation(fields: [userId], references: [id])
+  role     TenantRole @default(MEMBER)
+
+  // Phase 3e: HR permission flag — additive, defaults false
+  isHrManager Boolean @default(false)
+
+  joinedAt DateTime @default(now())
+
+  @@unique([tenantId, userId])
+  @@index([tenantId])
+}
+
+model RefreshToken {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id])
+  tokenHash String    @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PHASE 1a — TEAM INVITATIONS
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Invitation {
+  id        String     @id @default(cuid())
+  tenantId  String
+  tenant    Tenant     @relation(fields: [tenantId], references: [id])
+  email     String
+  role      TenantRole @default(MEMBER)
+  token     String     @unique @default(cuid())
+  expiresAt DateTime
+  acceptedAt DateTime?
+  createdBy  String
+  creator    User      @relation("InvitationCreator", fields: [createdBy], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@index([tenantId])
+  @@index([token])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CRM CORE (v0)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Contact {
+  id       String @id @default(cuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+
+  name     String
+  email    String?
+  phone    String?
+  company  String?
+  jobTitle String?
+  notes    String? @db.Text
+
+  // AI Contact Summary (v0)
+  aiSummary   String?  @db.Text
+  aiSummaryAt DateTime?
+
+  deals           Deal[]
+  activities      Activity[]
+  conversations   Conversation[]
+  importedLead    Lead?
+  appointments    Appointment[]
+  callRecords     CallRecord[]
+  tickets         Ticket[]
+  invoices        Invoice[]
+  projects        Project[]
+  formSubmissions FormSubmission[]
+  surveyResponses SurveyResponse[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([tenantId, email])
+  @@index([tenantId, name])
+  @@index([tenantId, company])
+}
+
+model Pipeline {
+  id        String  @id @default(cuid())
+  tenantId  String
+  tenant    Tenant  @relation(fields: [tenantId], references: [id])
+  name      String
+  isDefault Boolean @default(false)
+
+  stages PipelineStage[]
+  deals  Deal[]
+
+  @@index([tenantId])
+  @@unique([tenantId, name])
+}
+
+model PipelineStage {
+  id         String   @id @default(cuid())
+  pipelineId String
+  pipeline   Pipeline @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
+  name       String
+  position   Int
+
+  deals Deal[]
+
+  @@index([pipelineId, position])
+}
+
+enum DealStatus {
+  OPEN
+  WON
+  LOST
+}
+
+model Deal {
+  id       String @id @default(cuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+
+  title    String
+  value    Decimal? @db.Decimal(14, 2)
+  currency String   @default("USD")
+
+  pipelineId String
+  pipeline   Pipeline @relation(fields: [pipelineId], references: [id])
+  stageId    String
+  stage      PipelineStage @relation(fields: [stageId], references: [id])
+
+  contactId String?
+  contact   Contact? @relation(fields: [contactId], references: [id])
+
+  ownerId String?
+  owner   User?   @relation("DealOwner", fields: [ownerId], references: [id])
+
+  status   DealStatus @default(OPEN)
+  position Int        @default(0)  // Kanban ordering within stage
+
+  closedAt DateTime?
+
+  activities   Activity[]
+  appointments Appointment[]
+  callRecords  CallRecord[]
+  invoices     Invoice[]
+  project      Project?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId, stageId, position])
+  @@index([tenantId, status])
+  @@index([tenantId, contactId])
+  @@index([tenantId, ownerId])
+}
+
+model Activity {
+  id       String @id @default(cuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+
+  type    String  // NOTE | EMAIL | CALL | MEETING | TASK
+  subject String?
+  body    String? @db.Text
+
+  contactId String?
+  contact   Contact? @relation(fields: [contactId], references: [id])
+  dealId    String?
+  deal      Deal?    @relation(fields: [dealId], references: [id])
+
+  userId String?
+  user   User?   @relation(fields: [userId], references: [id])
+
+  occurredAt DateTime @default(now())
+
+  @@index([tenantId, contactId, occurredAt])
+  @@index([tenantId, dealId, occurredAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WORKFLOW ENGINE (v0 basic — Phase 1b adds the visual builder UI)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model WorkflowDefinition {
+  id       String @id @default(cuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+
+  name       String
+  isActive   Boolean @default(false)
+  definition Json    // node graph: { nodes: [...], edges: [...] }
+
+  runs WorkflowRun[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId, isActive])
+}
+
+enum WorkflowRunStatus {
+  PENDING
+  RUNNING
+  WAITING  // paused on a DELAY node
+  COMPLETED
+  FAILED
+}
+
+model WorkflowRun {
+  id                   String            @id @default(cuid())
+  tenantId             String
+  tenant               Tenant            @relation(fields: [tenantId], references: [id])
+  workflowDefinitionId String
+  workflowDefinition   WorkflowDefinition @relation(fields: [workflowDefinitionId], references: [id])
+
+  // Snapshot of definition at run-start — edits don't affect in-flight runs
+  definitionSnapshot Json
+  status             WorkflowRunStatus @default(PENDING)
+  currentNodeId      String?
+  context            Json              @default("{}")
+  error              String?
+  loopCount          Int               @default(0)  // loop guard counter
+
+  startedAt   DateTime  @default(now())
+  completedAt DateTime?
+
+  @@index([tenantId, status])
+  @@index([workflowDefinitionId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PHASE 3e — HR MODULE
+// isHrManager on TenantMember gates salary/document access.
+// Audit log on every salary/document view. Leave balance uses SELECT FOR UPDATE.
+// Payroll processing is explicitly out of scope.
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum EmploymentType {
+  FULL_TIME
+  PART_TIME
+  CONTRACT
+  INTERN
+}
+
+enum LeaveType {
+  ANNUAL
+  SICK
+  UNPAID
+  MATERNITY
+  PATERNITY
+  OTHER
+}
+
+enum LeaveStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+enum HrDocumentType {
+  CONTRACT
+  NDA
+  OFFER_LETTER
+  PERFORMANCE_REVIEW
+  OTHER
+}
+
+model EmployeeProfile {
+  id       String @id @default(cuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+
+  userId         String @unique
+  user           User   @relation(fields: [userId], references: [id])
+
+  employeeNumber String?
+  jobTitle       String?
+  department     String?
+  employmentType EmploymentType @default(FULL_TIME)
+  startDate      DateTime?
+  endDate        DateTime?
+
+  // Annual leave balance in days (decimal for half-days)
+  leaveBalance   Decimal @default(20) @db.Decimal(5, 1)
+
+  salaryRecords  SalaryRecord[]
+  hrDocuments    HrDocument[]
+  leaveRequests  LeaveRequest[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+}
+
+model SalaryRecord {
+  id         String          @id @default(cuid())
+  tenantId   String
+  employeeId String
+  employee   EmployeeProfile @relation(fields: [employeeId], references: [id])
+
+  effectiveDate DateTime
+  amount        Decimal  @db.Decimal(14, 2)
+  currency      String   @default("USD")
+  note          String?  @db.Text
+
+  createdById String
+  createdBy   User   @relation("SalaryCreatedBy", fields: [createdById], references: [id])
+  createdAt   DateTime @default(now())
+
+  @@index([employeeId, effectiveDate])
+}
+
+model HrDocument {
+  id         String          @id @default(cuid())
+  tenantId   String
+  employeeId String
+  employee   EmployeeProfile @relation(fields: [employeeId], references: [id])
+
+  type        HrDocumentType @default(OTHER)
+  name        String
+  // No direct public URL — server-mediated access only
+  storageKey  String
+  mimeType    String?
+  sizeBytes   Int?
+
+  uploadedById String
+  uploadedBy   User   @relation("HrDocumentUploadedBy", fields: [uploadedById], references: [id])
+  uploadedAt   DateTime @default(now())
+
+  @@index([employeeId])
+}
+
+model LeaveRequest {
+  id         String          @id @default(cuid())
+  tenantId   String
+  employeeId String
+  employee   EmployeeProfile @relation(fields: [employeeId], references: [id])
+
+  type      LeaveType
+  status    LeaveStatus @default(PENDING)
+  startDate DateTime
+  endDate   DateTime
+  days      Decimal     @db.Decimal(5, 1)
+  reason    String?     @db.Text
+
+  reviewedById String?
+  reviewedBy   User?   @relation("LeaveReviewedBy", fields: [reviewedById], references: [id])
+  reviewedAt   DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@index([employeeId, status])
+  @@index([tenantId, status])
+}
+
+// Audit log: every view of salary records or HR documents
+model HrAuditLog {
+  id         String @id @default(cuid())
+  tenantId   String
+  tenant     Tenant @relation(fields: [tenantId], references: [id])
+  actorId    String
+  actor      User   @relation("HrAuditActor", fields: [actorId], references: [id])
+  action     String
+  resourceId String
+  detail     String? @db.Text
+  createdAt  DateTime @default(now())
+
+  @@index([tenantId, createdAt])
+  @@index([actorId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PHASE 3d — PROJECT MANAGEMENT
+// One-level subtasks only. billedLineItemId @unique prevents double-billing.
+// Time entries are locked (read-only) once billedLineItemId is set.
+// Deal → Project conversion preserves contact and value.
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum ProjectStatus {
+  PLANNING
+  ACTIVE
+  PAUSED
+  COMPLETED
+  CANCELLED
+}
+
+enum TaskStatus {
+  TODO
+  IN_PROGRESS
+  REVIEW
+  DONE
+}
+
+enum TaskPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+model Project {
+  id       String @id @default(cuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+
+  name        String
+  description String?  @db.Text
+  status      ProjectStatus @default(PLANNING)
+  color       String        @default("#6366f1")
+
+  contactId   String?
+  contact     Contact? @relation(fields: [contactId], references: [id])
+  // Deal → Project conversion
+  dealId      String?  @unique
+  deal        Deal?    @relation(fields: [dealId], references: [id])
+
+  startDate   DateTime?
+  dueDate     DateTime?
+  budget      Decimal?  @db.Decimal(14, 2)
+
+  tasks        Task[]
+  timeEntries  TimeEntry[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId, status])
+  @@index([tenantId, contactId])
+}
+
+model Task {
+  id        String @id @default(cuid())
+  tenantId  String
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  title       String
+  description String?       @db.Text
+  status      TaskStatus    @default(TODO)
+  priority    TaskPriority  @default(MEDIUM)
+  position    Int           @default(0)
+  dueDate     DateTime?
+  estimatedMinutes Int?
+
+  // One-level subtasks only: parentId points to a Task with no parentId
+  parentId    String?
+  parent      Task?   @relation("Subtasks", fields: [parentId], references: [id])
+  subtasks    Task[]  @relation("Subtasks")
+
+  assigneeId  String?
+  assignee    User?   @relation("TaskAssignee", fields: [assigneeId], references: [id])
+
+  timeEntries TimeEntry[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([projectId, status, position])
+  @@index([tenantId, assigneeId])
+}
+
+model TimeEntry {
+  id        String  @id @default(cuid())
+  tenantId  String
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id])
+  taskId    String?
+  task      Task?   @relation(fields: [taskId], references: [id])
+
+  userId       String
+  user         User   @relation("TimeEntryUser", fields: [userId], references: [id])
+
+  description  String?
+  minutes      Int     // duration in minutes
+  startedAt    DateTime
+  // @unique prevents double-billing — once set, entry is locked
+  billedLineItemId String? @unique
+
+  createdAt DateTime @default(now())
+
+  @@index([projectId, startedAt])
+  @@index([tenantId, userId, startedAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PHASE 3c — INVENTORY
+// Ledger-based: StockMovement is append-only. currentStock is a cached denorm.
+// FOR UPDATE on Product prevents race conditions during adjustment + deduction.
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum MovementType {
+  RECEIVED
+  SOLD
+  ADJUSTED
+  RETURNED
+  WRITE_OFF
+}
+
+model Product {
+  id       String @id @default(cuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+
+  name        String
+  sku         String?  @unique
+  description String?  @db.Text
+  unitCost    Decimal? @db.Decimal(14, 2)
+  unitPrice   Decimal? @db.Decimal(14, 2)
+  unit        String   @default("pcs")
+  // Cached current stock (derived from StockMovement ledger, updated in transaction)
+  currentStock Int     @default(0)
+  // Allow negative stock (backorders) when true
+  allowBackorder Boolean @default(false)
+
+  movements StockMovement[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([tenantId, sku])
+}
+
+model StockMovement {
+  id        String  @id @default(cuid())
+  tenantId  String
+  productId String
+  product   Product @relation(fields: [productId], references: [id])
+
+  type      MovementType
+  quantity  Int    // positive = in, negative = out
+  // Running balance AFTER this movement (denorm for reporting)
+  balance   Int
+
+  note      String?
+  // Link to invoice that caused the deduction (SOLD type)
+  invoiceId String?
+
+  createdAt DateTime @default(now())
+
+  // Append-only: no updates, no deletes enforced at application layer
+  @@index([productId, createdAt])
+  @@index([tenantId, createdAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PHASE 3b — INVOICING
+// Number: counter per tenant (SELECT FOR UPDATE prevents race).
+// Immutable after SENT — no edits, void only (ADMIN).
+// Payment: idempotency key prevents double-charge.
+// Expense tracking + P&L report. Append-only audit events.
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum InvoiceStatus {
+  DRAFT
+  SENT
+  PAID
+  OVERDUE
+  VOID
+}
+
+enum PaymentMethod {
+  CASH
+  BANK_TRANSFER
+  CARD
+  MOBILE
+  CHEQUE
+  OTHER
+}
+
+enum ExpenseCategory {
+  SALARY
+  RENT
+  UTILITIES
+  MARKETING
+  TRAVEL
+  SUPPLIES
+  OTHER
+}
+
+// Per-tenant invoice counter (prevents number gaps + race conditions)
+model InvoiceCounter {
+  tenantId String @id
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+  lastNumber Int   @default(0)
+}
+
+model Invoice {
+  id       String @id @default(cuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+
+  // INV-0001 style numbering; set on SEND, not on DRAFT create
+  number   String?  @unique
+
+  contactId String?
+  contact   Contact? @relation(fields: [contactId], references: [id])
+  dealId    String?
+  deal      Deal?    @relation(fields: [dealId], references: [id])
+
+  status       InvoiceStatus @default(DRAFT)
+  currency     String        @default("USD")
+  taxRate      Decimal?      @db.Decimal(5, 4)  // e.g. 0.15 = 15%
+  notes        String?       @db.Text
+  dueDate      DateTime?
+  paidAt       DateTime?
+  voidReason   String?
+
+  items        InvoiceItem[]
+  payments     Payment[]
+  auditEvents  InvoiceAuditEvent[]
+
+  issuedAt  DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@index([tenantId, status])
+  @@index([tenantId, contactId])
+}
+
+model InvoiceItem {
+  id          String  @id @default(cuid())
+  invoiceId   String
+  invoice     Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  description String
+  quantity    Decimal @db.Decimal(10, 3)
+  unitPrice   Decimal @db.Decimal(14, 2)
+  // total = quantity * unitPrice (computed at read time)
+
+  @@index([invoiceId])
+}
+
+model Payment {
+  id          String        @id @default(cuid())
+  tenantId    String
+  invoiceId   String
+  invoice     Invoice       @relation(fields: [invoiceId], references: [id])
+  amount      Decimal       @db.Decimal(14, 2)
+  currency    String
+  method      PaymentMethod @default(BANK_TRANSFER)
+  // Idempotency key — prevents double-charge
+  idempotencyKey String     @unique @default(cuid())
+  notes          String?
+  paidAt         DateTime   @default(now())
+
+  @@index([invoiceId])
+  @@index([tenantId, paidAt])
+}
+
+// Append-only audit trail — never updated, only inserted
+model InvoiceAuditEvent {
+  id        String   @id @default(cuid())
+  invoiceId String
+  invoice   Invoice  @relation(fields: [invoiceId], references: [id])
+  event     String   // CREATED | SENT | PAID | VOIDED | PAYMENT_RECORDED
+  actorId   String?  // User.id
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  @@index([invoiceId, createdAt])
+}
+
+model Expense {
+  id       String          @id @default(cuid())
+  tenantId String
+  tenant   Tenant          @relation(fields: [tenantId], references: [id])
+
+  description String
+  amount      Decimal       @db.Decimal(14, 2)
+  currency    String        @default("USD")
+  category    ExpenseCategory @default(OTHER)
+  date        DateTime
+  notes       String?       @db.Text
+  receiptUrl  String?
+
+  createdById String?
+
+  createdAt DateTime @default(now())
+
+  @@index([tenantId, date])
+  @@index([tenantId, category])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PHASE 3a — HELPDESK TICKETS
+// Internal notes never sent to channel. SLA timer via BullMQ job.
+// Channel-aware replies reuse Phase 1c conversation records.
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum TicketStatus {
+  OPEN
+  IN_PROGRESS
+  WAITING_CUSTOMER
+  RESOLVED
+  CLOSED
+}
+
+enum TicketPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+model TicketCategory {
+  id       String @id @default(cuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+  name     String
+  color    String @default("#6366f1")
+
+  tickets Ticket[]
+
+  @@index([tenantId])
+}
+
+model Ticket {
+  id       String @id @default(cuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+
+  // Human-readable ticket number e.g. #1042
+  number   Int
+
+  subject  String
+  status   TicketStatus   @default(OPEN)
+  priority TicketPriority @default(MEDIUM)
+
+  contactId      String?
+  contact        Contact?        @relation(fields: [contactId], references: [id])
+  conversationId String?
+  conversation   Conversation?   @relation(fields: [conversationId], references: [id])
+  callRecordId   String?
+  callRecord     CallRecord?     @relation(fields: [callRecordId], references: [id])
+  categoryId     String?
+  category       TicketCategory? @relation(fields: [categoryId], references: [id])
+  assigneeId     String?
+  assignee       User?           @relation("TicketAssignee", fields: [assigneeId], references: [id])
+
+  // SLA breach datetime (set by BullMQ on create/update)
+  slaBreachAt DateTime?
+
+  comments TicketComment[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, number])
+  @@index([tenantId, status, priority])
+  @@index([tenantId, contactId])
+}
+
+model TicketComment {
+  id       String @id @default(cuid())
+  tenantId String
+  ticketId String
+  ticket   Ticket @relation(fields: [ticketId], references: [id])
+
+  body String @db.Text
+  // Internal notes are never sent to the customer channel
+  isInternalNote Boolean @default(false)
+
+  authorId String?
+  author   User?   @relation("TicketCommentAuthor", fields: [authorId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@index([ticketId, createdAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PHASE 2c — VOICE AI (VAPI)
+// Scripted call flows, recording compliance/consent, outbound consent-gating.
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum CallDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum CallStatus {
+  INITIATED
+  RINGING
+  IN_PROGRESS
+  COMPLETED
+  FAILED
+  NO_ANSWER
+  VOICEMAIL
+}
+
+model CallScript {
+  id       String @id @default(cuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+
+  name    String
+  // JSON array of script nodes: [{type:'greeting'|'question'|'handoff', text:'...'}]
+  nodes   Json
+  isActive Boolean @default(true)
+
+  callRecords CallRecord[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+}
+
+model CallRecord {
+  id       String @id @default(cuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+
+  // Vapi call ID for reference
+  vapiCallId    String?  @unique
+  callScriptId  String?
+  callScript    CallScript? @relation(fields: [callScriptId], references: [id])
+
+  contactId  String?
+  contact    Contact? @relation(fields: [contactId], references: [id])
+  dealId     String?
+  deal       Deal?    @relation(fields: [dealId], references: [id])
+
+  direction    CallDirection
+  status       CallStatus @default(INITIATED)
+
+  // Phone numbers
+  fromNumber String
+  toNumber   String
+
+  // Consent: outbound calls require explicit consent flag
+  consentGiven Boolean @default(false)
+
+  durationSeconds Int?
+  recordingUrl    String?  // URL to recording; access via signed URL only
+  transcript      String?  @db.Text
+  summary         String?  @db.Text  // AI-generated summary
+
+  tickets Ticket[]
+
+  startedAt DateTime  @default(now())
+  endedAt   DateTime?
+
+  @@index([tenantId, status])
+  @@index([tenantId, contactId])
+  @@index([vapiCallId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PHASE 2a — AI LEAD GENERATION
+// Official API aggregation only (Google Places + Apollo + Meta Ad Library).
+// Leads are staged for review before import — no silent bulk import.
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum LeadStatus {
+  PENDING   // staged, not yet reviewed
+  IMPORTED  // imported as Contact
+  REJECTED  // dismissed by user
+}
+
+model LeadSource {
+  id       String @id @default(cuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+
+  // The NL query that generated this batch (e.g. "plumbers in Dhaka")
+  query     String
+  provider  String   // GOOGLE_PLACES | APOLLO | META_ADS
+  createdAt DateTime @default(now())
+
+  leads Lead[]
+
+  @@index([tenantId])
+}
+
+model Lead {
+  id           String     @id @default(cuid())
+  tenantId     String
+  tenant       Tenant     @relation(fields: [tenantId], references: [id])
+  leadSourceId String
+  leadSource   LeadSource @relation(fields: [leadSourceId], references: [id])
+
+  name         String
+  email        String?
+  phone        String?
+  company      String?
+  website      String?
+  address      String?
+  industry     String?
+  employeeCount Int?
+  // Raw provider payload kept for traceability
+  rawData      Json?
+
+  status     LeadStatus @default(PENDING)
+  // Set when status = IMPORTED
+  contactId  String?    @unique
+  contact    Contact?   @relation(fields: [contactId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@index([tenantId, status])
+  @@index([leadSourceId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PHASE 2b — BOOKING & APPOINTMENTS
+// UTC storage, IANA timezone display, DB-level double-booking prevention.
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum AppointmentStatus {
+  SCHEDULED
+  CONFIRMED
+  CANCELLED
+  COMPLETED
+  NO_SHOW
+}
+
+model ServiceType {
+  id       String @id @default(cuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+
+  name            String
+  durationMinutes Int    @default(30)
+  color           String @default("#6366f1")
+  isActive        Boolean @default(true)
+
+  appointments Appointment[]
+
+  createdAt DateTime @default(now())
+
+  @@index([tenantId])
+}
+
+model Appointment {
+  id       String @id @default(cuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+
+  serviceTypeId String?
+  serviceType   ServiceType? @relation(fields: [serviceTypeId], references: [id])
+
+  contactId String?
+  contact   Contact? @relation(fields: [contactId], references: [id])
+
+  dealId String?
+  deal   Deal?    @relation(fields: [dealId], references: [id])
+
+  // Stored as UTC; display with ianaTz
+  startsAt   DateTime
+  endsAt     DateTime
+  ianaTz     String   @default("UTC")
+
+  title    String
+  notes    String?  @db.Text
+  status   AppointmentStatus @default(SCHEDULED)
+  location String?
+
+  // For AI inbox scheduling: which agent/staff is assigned
+  assignedUserId String?
+  assignedUser   User?   @relation("AppointmentAssignee", fields: [assignedUserId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // DB-level double-booking prevention handled via application-layer SELECT FOR UPDATE
+  // (PostgreSQL advisory locks or serializable transactions in booking route)
+  @@index([tenantId, startsAt])
+  @@index([tenantId, assignedUserId, startsAt])
+  @@index([tenantId, contactId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PHASE 1c — OMNICHANNEL INBOX
+// WhatsApp Cloud API + Email unified inbox.
+// Identity resolution is exact-match only (phone/email → Contact).
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum InboxChannel {
+  WHATSAPP
+  EMAIL
+}
+
+enum ConversationStatus {
+  OPEN
+  RESOLVED
+  SNOOZED
+}
+
+enum MessageDirection {
+  INBOUND
+  OUTBOUND
+}
+
+// Per-tenant channel configuration (one row per phone number / email inbox)
+model ChannelAccount {
+  id       String      @id @default(cuid())
+  tenantId String
+  tenant   Tenant      @relation(fields: [tenantId], references: [id])
+
+  channel     InboxChannel
+  name        String       // display name e.g. "Support WhatsApp" or "hello@acme.com"
+  // WhatsApp: phone_number_id from Meta
+  // Email: the inbox address
+  externalId  String
+  accessToken String?      // encrypted at rest in production; plaintext for v0
+
+  conversations Conversation[]
+
+  createdAt DateTime @default(now())
+
+  @@unique([tenantId, channel, externalId])
+  @@index([tenantId])
+}
+
+model Conversation {
+  id       String @id @default(cuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+
+  channelAccountId String
+  channelAccount   ChannelAccount @relation(fields: [channelAccountId], references: [id])
+
+  // External identity: phone (WA) or email address of the customer
+  externalId String
+  // Resolved CRM contact (exact-match only — see memory Phase 1c)
+  contactId  String?
+  contact    Contact? @relation(fields: [contactId], references: [id])
+
+  status    ConversationStatus @default(OPEN)
+  subject   String?            // email subject / WA display name
+
+  messages Message[]
+  tickets  Ticket[]
+
+  lastMessageAt DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@unique([channelAccountId, externalId])
+  @@index([tenantId, status, lastMessageAt])
+  @@index([tenantId, contactId])
+}
+
+model Message {
+  id             String @id @default(cuid())
+  tenantId       String
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id])
+
+  direction  MessageDirection
+  body       String           @db.Text
+  // WhatsApp message_id / email Message-ID for dedup
+  externalId String?          @unique
+
+  // Internal notes visible only to agents, never sent to channel
+  isInternalNote Boolean @default(false)
+
+  sentById String?   // agent User.id for OUTBOUND
+  sentAt   DateTime  @default(now())
+
+  @@index([conversationId, sentAt])
+  @@index([tenantId, sentAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FORMS
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Form {
+  id          String  @id @default(cuid())
+  tenantId    String
+  tenant      Tenant  @relation(fields: [tenantId], references: [id])
+
+  title       String
+  description String? @db.Text
+  slug        String  @unique @default(cuid())
+  // Array of { id, type, label, placeholder, required, options? }
+  fields      Json    @default("[]")
+  isActive    Boolean @default(true)
+  // Auto-create CRM contact on submission
+  createContact Boolean @default(true)
+
+  submissions FormSubmission[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([slug])
+}
+
+model FormSubmission {
+  id        String  @id @default(cuid())
+  formId    String
+  form      Form    @relation(fields: [formId], references: [id], onDelete: Cascade)
+  tenantId  String
+  tenant    Tenant  @relation(fields: [tenantId], references: [id])
+
+  data      Json    // { fieldId: value }
+  contactId String?
+  contact   Contact? @relation(fields: [contactId], references: [id])
+  ipAddress String?
+
+  createdAt DateTime @default(now())
+
+  @@index([formId, createdAt])
+  @@index([tenantId, createdAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CAMPAIGNS
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Campaign {
+  id       String @id @default(cuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+
+  name    String
+  channel String  // 'whatsapp' | 'email'
+  subject String? // email only
+  body    String  @db.Text
+  // Filter criteria saved as JSON: { tags, company, hasEmail, hasPhone }
+  filter  Json    @default("{}")
+  status  String  @default("DRAFT") // DRAFT | SENDING | SENT | FAILED
+
+  totalContacts Int @default(0)
+  totalSent     Int @default(0)
+  totalFailed   Int @default(0)
+
+  sentAt    DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId, status])
+  @@index([tenantId, createdAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SURVEYS
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Survey {
+  id          String  @id @default(cuid())
+  tenantId    String
+  tenant      Tenant  @relation(fields: [tenantId], references: [id])
+
+  title       String
+  description String? @db.Text
+  slug        String  @unique @default(cuid())
+  // Array of { id, type: 'nps'|'rating'|'text'|'choice', question, options? }
+  questions   Json    @default("[]")
+  isActive    Boolean @default(true)
+  thankYouMsg String  @default("Thank you for your feedback!")
+
+  responses SurveyResponse[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([slug])
+}
+
+model SurveyResponse {
+  id        String  @id @default(cuid())
+  surveyId  String
+  survey    Survey  @relation(fields: [surveyId], references: [id], onDelete: Cascade)
+  tenantId  String
+  tenant    Tenant  @relation(fields: [tenantId], references: [id])
+
+  answers   Json    // { questionId: value }
+  contactId String?
+  contact   Contact? @relation(fields: [contactId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@index([surveyId, createdAt])
+  @@index([tenantId, createdAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LANDING PAGES
+// ─────────────────────────────────────────────────────────────────────────────
+
+model LandingPage {
+  id       String @id @default(cuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+
+  title       String
+  slug        String  @unique
+  headline    String
+  subheadline String? @db.Text
+  // URL of background / hero image
+  heroImageUrl String?
+  // Brand color hex
+  brandColor  String  @default("#7C3AED")
+  ctaText     String  @default("Get Started")
+  // 'form' | 'booking' | 'url'
+  ctaAction   String  @default("form")
+  ctaTarget   String?
+  // Inline form fields (if ctaAction = 'form')
+  formFields  Json    @default("[{\"id\":\"name\",\"label\":\"Full Name\",\"type\":\"text\",\"required\":true},{\"id\":\"email\",\"label\":\"Email\",\"type\":\"email\",\"required\":true},{\"id\":\"phone\",\"label\":\"Phone\",\"type\":\"tel\",\"required\":false}]")
+  published   Boolean @default(false)
+
+  views Int @default(0)
+  leads Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([slug])
+  @@index([published])
+}
